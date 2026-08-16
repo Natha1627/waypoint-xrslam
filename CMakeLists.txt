@@ -14,6 +14,7 @@ option(XRSLAM_ENABLE_THREADING "..." OFF)
 option(XRSLAM_PC_HEADLESS_ONLY "..." OFF)
 option(XRSLAM_IOS "..." OFF)
 option(XRSLAM_TEST "..." OFF)
+option(XRSLAM_DEVICE_REPLAY "Waypoint: build xrslam_device_replay headless CLI (xrslam-device-replay/)" OFF)
 
 if(IOS)
   set(XRSLAM_IOS ON)
@@ -30,6 +31,10 @@ add_subdirectory(xrslam)
 add_subdirectory(xrslam-extra)
 add_subdirectory(xrslam-interface)
 add_subdirectory(xrslam-localization)
+
+if(XRSLAM_DEVICE_REPLAY)
+  add_subdirectory(xrslam-device-replay)
+endif()
 
 if(XRSLAM_PC)
   add_subdirectory(xrslam-pc)
