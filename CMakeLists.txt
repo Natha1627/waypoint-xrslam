@@ -23,7 +23,7 @@ endif()
 
 
 if(NOT IOS)
-  set(XRSLAM_PC ON)
+  set(XRSLAM_PC OFF)
 endif()
 
 add_subdirectory(xrslam)
