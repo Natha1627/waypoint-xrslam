@@ -6,6 +6,7 @@
 #ifndef _XRSLAM_H_
 #define _XRSLAM_H_
 #include <stdint.h>
+#include <vector>
 
 #ifdef __cplusplus
 extern "C" {
