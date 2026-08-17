@@ -1,0 +1,90 @@
+name: Build iOS (engine + wpslam shim)
+
+# Waypoint chantier W4 derisking spike: does `xrslam` (+ its eigen/ceres-solver/
+# opencv/yaml-cpp superbuild) and the new wpslam_ios_shim (xrslam-ios/wpslam/)
+# actually compile for iOS arm64? This lives on the fork (not the consuming rn
+# app repo) so it can be triggered/iterated on without touching the app's own
+# CI. See rn/.github/workflows/ios-slam-engine.yml for the equivalent workflow
+# meant to live in the app repo once committed there.
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches:
+      - waypoint/ios
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-ios-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-ios-engine:
+    name: Build libxrslam + wpslam_ios_shim (headless)
+    runs-on: macos-15
+    timeout-minutes: 90
+
+    env:
+      IOS_DEPLOYMENT_TARGET: '15.1'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Show toolchain versions
+        run: |
+          xcodebuild -version
+          cmake --version
+          clang --version
+
+      - name: Configure CMake (iOS arm64, engine + shim only)
+        run: |
+          cmake -S . -B build/iOS \
+            -G "Unix Makefiles" \
+            -D CMAKE_TOOLCHAIN_FILE=cmake/Modules/Platform/ios.toolchain.cmake \
+            -D CMAKE_BUILD_TYPE=Release \
+            -D IOS_PLATFORM=OS64 \
+            -D IOS_ARCH=arm64 \
+            -D IOS_DEPLOYMENT_TARGET="$IOS_DEPLOYMENT_TARGET" \
+            -D ENABLE_BITCODE=0 \
+            -D ENABLE_ARC=1 \
+            -D ENABLE_VISIBILITY=0 \
+            -D CMAKE_POLICY_VERSION_MINIMUM=3.5 \
+            -D XRSLAM_DEVICE_REPLAY=OFF \
+            -D XRSLAM_IOS_BUILD_VISUALIZER=OFF \
+            -D XRSLAM_IOS_BUILD_WPSLAM_SHIM=ON
+
+      - name: Build xrslam (engine — eigen/ceres-solver/opencv/yaml-cpp superbuild)
+        run: cmake --build build/iOS --config Release --target xrslam --parallel
+
+      - name: Build wpslam_ios_shim (Obj-C++ shim over xrslam)
+        run: cmake --build build/iOS --config Release --target wpslam_ios_shim --parallel
+
+      - name: Collect build outputs
+        if: always()
+        run: |
+          mkdir -p artifact/lib artifact/include
+          echo "--- lib/iOS (xrslam merged static lib) ---"
+          find lib -type f 2>/dev/null || echo "(lib/ not produced)"
+          echo "--- build/iOS/xrslam-ios/wpslam (shim static lib) ---"
+          find build/iOS/xrslam-ios/wpslam -type f -name '*.a' 2>/dev/null || echo "(shim .a not produced)"
+          echo "--- include/ (public headers copied by xrslam-interface) ---"
+          find include -type f 2>/dev/null || echo "(include/ not produced)"
+
+          [ -d lib/iOS ] && cp -R lib/iOS artifact/lib/ || true
+          [ -f include/XRSLAM.h ] && cp include/XRSLAM.h artifact/include/ || true
+          [ -f xrslam-ios/wpslam/WpSlamShim.h ] && cp xrslam-ios/wpslam/WpSlamShim.h artifact/include/ || true
+          find build/iOS/xrslam-ios/wpslam -name '*.a' -exec cp {} artifact/lib/ \; 2>/dev/null || true
+
+          echo "--- artifact/ final contents ---"
+          find artifact -type f
+
+      - name: Upload engine artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-slam-engine
+          path: artifact/**
+          if-no-files-found: warn
