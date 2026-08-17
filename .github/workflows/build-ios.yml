@@ -39,12 +39,16 @@ jobs:
           cmake --version
           clang --version
 
+      # -G Xcode, not "Unix Makefiles": the GH macos-15 image has no `make` on
+      # PATH (CMAKE_MAKE_PROGRAM not set — first attempt's exact failure).
+      # Xcode is upstream's own documented generator (build-ios.sh); building
+      # only library targets below needs no codesigning identity.
       - name: Configure CMake (iOS arm64, engine + shim only)
         run: |
           cmake -S . -B build/iOS \
-            -G "Unix Makefiles" \
+            -G Xcode \
             -D CMAKE_TOOLCHAIN_FILE=cmake/Modules/Platform/ios.toolchain.cmake \
-            -D CMAKE_BUILD_TYPE=Release \
+            -D CMAKE_CONFIGURATION_TYPES=Release \
             -D IOS_PLATFORM=OS64 \
             -D IOS_ARCH=arm64 \
             -D IOS_DEPLOYMENT_TARGET="$IOS_DEPLOYMENT_TARGET" \
@@ -52,15 +56,17 @@ jobs:
             -D ENABLE_ARC=1 \
             -D ENABLE_VISIBILITY=0 \
             -D CMAKE_POLICY_VERSION_MINIMUM=3.5 \
+            -D CMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO \
+            -D CMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_REQUIRED=NO \
             -D XRSLAM_DEVICE_REPLAY=OFF \
             -D XRSLAM_IOS_BUILD_VISUALIZER=OFF \
             -D XRSLAM_IOS_BUILD_WPSLAM_SHIM=ON
 
       - name: Build xrslam (engine — eigen/ceres-solver/opencv/yaml-cpp superbuild)
-        run: cmake --build build/iOS --config Release --target xrslam --parallel
+        run: cmake --build build/iOS --config Release --target xrslam -- -allowProvisioningUpdates
 
       - name: Build wpslam_ios_shim (Obj-C++ shim over xrslam)
-        run: cmake --build build/iOS --config Release --target wpslam_ios_shim --parallel
+        run: cmake --build build/iOS --config Release --target wpslam_ios_shim -- -allowProvisioningUpdates
 
       - name: Collect build outputs
         if: always()
