@@ -18,7 +18,59 @@
 //
 // Usage:
 //   xrslam_device_replay --input <dir> [--out <file.json>] \
-//                         [--max-frames N] [--slam-config <path>]
+//                         [--max-frames N] [--slam-config <path>] \
+//                         [--dump-jsonl <file.jsonl>]
+//
+// --dump-jsonl (Waypoint chantier R2, AR-overlay convention verification
+// bench, native/slam/bench/ar_verify/): one JSON object PER PROCESSED FRAME
+// (not the aggregated --out summary), written incrementally. Fields:
+//   frame_index, frame_path (basename under frames/), t_ns (ABSOLUTE, same
+//   epoch as imu.jsonl's "t" and the frame filename -- no epoch subtraction,
+//   unlike the --out trajectory's relative "t"), t_s (relative to this run's
+//   epoch, kept for continuity with --out), state (0/1/2), state_name,
+//   pose_valid (state==TRACKING_SUCCESS), body_pose {p:[x,y,z],
+//   q_xyzw:[x,y,z,w]}, camera_pose {p, q_xyzw} (same shape), n_landmarks,
+//   landmarks_xyz (flat world-frame xyz, decimated to --dump-max-landmarks).
+//
+// POSE SEMANTICS (read from xrslam-interface/src/XRSLAMManager.cpp, NOT from
+// XRSLAM.h's doxygen comment on XRSLAMPose -- that comment, "for a 3D point
+// in world coordinate X_w, its 3D coordinate in the camera frame X_c = R *
+// X_w + T", is the OPPOSITE of what the implementation actually returns and
+// must not be trusted):
+//   GetResultBodyPose():   body_pose.q = latest_pose.q * imu_to_body_rotation();
+//                          body_pose.p = latest_pose.p + latest_pose.q * imu_to_body_translation();
+//   GetResultCameraPose(): camera_pose.q = latest_pose.q * camera_to_body_rotation();  // config's q_bc
+//                          camera_pose.p = latest_pose.p + latest_pose.q * camera_to_body_translation();
+// where `latest_pose` is the sliding window's own optimized IMU/body pose.
+// This is a forward (LOCAL-TO-WORLD) compose: p_world = R * p_local + t, i.e.
+// XRSLAMPose.translation is WHERE the body/camera IS in the XRSLAM world
+// frame, and XRSLAMPose.quaternion (Eigen coeffs order, x,y,z,w) rotates
+// LOCAL-frame vectors INTO world frame -- exactly "T_world_body" /
+// "T_world_camera" in the R2 mission's H1/H2 vocabulary, NOT "T_body_world".
+// To project a world point into image space you therefore need the INVERSE:
+// p_camera = R(q_world_camera)^T * (p_world - t_world_camera).
+// camera_to_body_rotation()/translation() are read straight from this
+// packet's device_config.yaml (cam0.extrinsic.q_bc/p_bc) -- i.e. GetResult-
+// CameraPose already applies the REAL calibrated Tcb for this capture. The
+// live product path (jni/wpslam_jni.cpp, native/slam/jni/) instead calls
+// GetResultBodyPose only and is expected to apply its OWN "Tcb portrait_
+// known" downstream (docs/SLAM-LIVE-CONTRACT.md) -- comparing body_pose (+
+// externally-applied Tcb) against camera_pose (Tcb applied internally, known
+// correct for this device) is exactly the H1 vs H2/H3/H4/H5 cross-check this
+// dump feeds.
+//
+// LANDMARKS: XRSLAMLandmark only carries {x,y,z} (world frame) -- verified
+// in xrslam/include/xrslam/inspection.h's `struct Landmark {vector<3> p;
+// bool triangulated;}` (populated by initializer.cpp/sliding_window_
+// tracker.cpp) and in xrslam-interface's GetResultLandmarks: even though the
+// underlying `Track` class DOES carry a stable `Identifiable<Track>::id()`
+// internally, that id is never copied into the Landmark/XRSLAMLandmark
+// structs, and `map->get_track(i)` iterates dense STORAGE SLOTS (reused
+// across evicted tracks), not a stable identity -- so there is no
+// (unmodified-API) way to correlate "the same physical landmark" across two
+// dumped frames by id. This dump therefore emits xyz only, per-frame; the R2
+// analysis script re-derives persistence via a spatial hash instead (the
+// point of the mission's "magasin d'ancres persistant").
 //
 // <dir> must contain:
 //   frames/f_NNNNN_<t_ns>.jpg -- JPEGs; filename embeds the ALREADY-joined
@@ -230,8 +282,9 @@ double percentile(const std::vector<double> &sorted_vals, double p) {
 } // namespace
 
 int main(int argc, char **argv) {
-    std::string input_dir, out_path, slam_cfg_override;
+    std::string input_dir, out_path, slam_cfg_override, dump_jsonl_path;
     long max_frames = -1;
+    long dump_max_landmarks = 2000;
 
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
@@ -250,6 +303,10 @@ int main(int argc, char **argv) {
             max_frames = std::stol(next());
         else if (a == "--slam-config")
             slam_cfg_override = next();
+        else if (a == "--dump-jsonl")
+            dump_jsonl_path = next();
+        else if (a == "--dump-max-landmarks")
+            dump_max_landmarks = std::stol(next());
         else {
             fprintf(stderr, "unknown arg: %s\n", a.c_str());
             return 2;
@@ -258,7 +315,8 @@ int main(int argc, char **argv) {
     if (input_dir.empty()) {
         fprintf(stderr,
                 "usage: %s --input <dir> [--out <file.json>] [--max-frames N] "
-                "[--slam-config <path>]\n",
+                "[--slam-config <path>] [--dump-jsonl <file.jsonl>] "
+                "[--dump-max-landmarks N]\n",
                 argv[0]);
         return 2;
     }
@@ -340,8 +398,22 @@ int main(int argc, char **argv) {
     double accum_ms = 0.0;
     long open_frame_idx = -1;
     long long open_frame_t_ns = 0;
+    std::string open_frame_path;
     int pending_state = -1;
-    double pending_pose[7] = {0, 0, 0, 0, 0, 0, 1}; // tx,ty,tz,qx,qy,qz,qw
+    double pending_pose[7] = {0, 0, 0, 0, 0, 0, 1};        // body: tx,ty,tz,qx,qy,qz,qw
+    double pending_camera_pose[7] = {0, 0, 0, 0, 0, 0, 1}; // camera: same layout
+    bool pending_camera_pose_valid = false;
+    std::vector<double> pending_landmarks_xyz; // flat world-frame xyz
+
+    std::ofstream dump_jsonl_stream;
+    if (!dump_jsonl_path.empty()) {
+        dump_jsonl_stream.open(dump_jsonl_path, std::ios::out | std::ios::trunc);
+        if (!dump_jsonl_stream.is_open()) {
+            fprintf(stderr, "cannot open --dump-jsonl output %s\n", dump_jsonl_path.c_str());
+            return 2;
+        }
+        dump_jsonl_stream << std::setprecision(9);
+    }
 
     std::vector<double> frame_times_ms;
     struct TrajRow {
@@ -363,6 +435,7 @@ int main(int argc, char **argv) {
     // Closes the PREVIOUS frame's accumulation window: it now includes every
     // IMU push that ran since that frame's image push, which is where its
     // deferred feature-tracking actually executed (see TIMING NOTE above).
+    static const char *kStateNames[3] = {"INITIALIZING", "TRACKING_SUCCESS", "TRACKING_FAIL"};
     auto flush_pending = [&]() {
         if (open_frame_idx < 0)
             return;
@@ -373,6 +446,39 @@ int main(int argc, char **argv) {
                                {pending_pose[0], pending_pose[1], pending_pose[2]},
                                {pending_pose[3], pending_pose[4], pending_pose[5], pending_pose[6]},
                                accum_ms});
+
+        if (dump_jsonl_stream.is_open()) {
+            const char *state_name =
+                (pending_state >= 0 && pending_state <= 2) ? kStateNames[pending_state] : "UNKNOWN";
+            std::ostringstream row;
+            row << std::setprecision(9);
+            row << "{\"frame_index\":" << open_frame_idx
+                << ",\"frame_path\":\"" << open_frame_path << "\""
+                << ",\"t_ns\":" << open_frame_t_ns
+                << ",\"t_s\":" << (double)(open_frame_t_ns - epoch_ns) / 1e9
+                << ",\"state\":" << pending_state
+                << ",\"state_name\":\"" << state_name << "\""
+                << ",\"pose_valid\":" << (pending_camera_pose_valid ? "true" : "false")
+                << std::setprecision(9)
+                << ",\"body_pose\":{\"p\":[" << pending_pose[0] << "," << pending_pose[1] << ","
+                << pending_pose[2] << "],\"q_xyzw\":[" << pending_pose[3] << "," << pending_pose[4]
+                << "," << pending_pose[5] << "," << pending_pose[6] << "]}"
+                << ",\"camera_pose\":{\"p\":[" << pending_camera_pose[0] << ","
+                << pending_camera_pose[1] << "," << pending_camera_pose[2] << "],\"q_xyzw\":["
+                << pending_camera_pose[3] << "," << pending_camera_pose[4] << ","
+                << pending_camera_pose[5] << "," << pending_camera_pose[6] << "]}"
+                << ",\"n_landmarks\":" << (pending_landmarks_xyz.size() / 3)
+                << ",\"landmarks_xyz\":[";
+            for (size_t k = 0; k < pending_landmarks_xyz.size(); k++) {
+                if (k)
+                    row << ",";
+                row << pending_landmarks_xyz[k];
+            }
+            row << "]"
+                << ",\"frame_ms\":" << std::setprecision(4) << accum_ms << std::setprecision(9)
+                << "}\n";
+            dump_jsonl_stream << row.str();
+        }
     };
 
     while (ci < frames.size() || ii < imu.size()) {
@@ -416,10 +522,19 @@ int main(int argc, char **argv) {
             accum_ms = 0.0;
             open_frame_idx = processed;
             open_frame_t_ns = it.t_ns;
+            {
+                size_t slash = it.path.find_last_of('/');
+                open_frame_path = (slash == std::string::npos) ? it.path : it.path.substr(slash + 1);
+            }
             pending_state = -1;
             pending_pose[0] = pending_pose[1] = pending_pose[2] = 0;
             pending_pose[3] = pending_pose[4] = pending_pose[5] = 0;
             pending_pose[6] = 1;
+            pending_camera_pose[0] = pending_camera_pose[1] = pending_camera_pose[2] = 0;
+            pending_camera_pose[3] = pending_camera_pose[4] = pending_camera_pose[5] = 0;
+            pending_camera_pose[6] = 1;
+            pending_camera_pose_valid = false;
+            pending_landmarks_xyz.clear();
 
             double t_s = (double)(it.t_ns - epoch_ns) / 1e9;
             XRSLAMImage image;
@@ -449,7 +564,56 @@ int main(int argc, char **argv) {
                     pending_pose[4] = pose.quaternion[1];
                     pending_pose[5] = pose.quaternion[2];
                     pending_pose[6] = pose.quaternion[3];
+
+                    // Camera pose (Tcb ALREADY applied internally, from this
+                    // packet's device_config.yaml cam0.extrinsic.q_bc/p_bc --
+                    // see the pose-semantics note atop this file). Fetched
+                    // alongside body pose so the R2 dump can compare H1
+                    // (this) against H2..H5 (body pose + externally-applied
+                    // Tcb hypotheses) on the exact same instant.
+                    XRSLAMPose cam_pose;
+                    XRSLAMGetResult(XRSLAM_RESULT_CAMERA_POSE, &cam_pose);
+                    pending_camera_pose[0] = cam_pose.translation[0];
+                    pending_camera_pose[1] = cam_pose.translation[1];
+                    pending_camera_pose[2] = cam_pose.translation[2];
+                    pending_camera_pose[3] = cam_pose.quaternion[0];
+                    pending_camera_pose[4] = cam_pose.quaternion[1];
+                    pending_camera_pose[5] = cam_pose.quaternion[2];
+                    pending_camera_pose[6] = cam_pose.quaternion[3];
+                    pending_camera_pose_valid = true;
                 }
+
+                // Landmarks: attempt on EVERY processed frame (not just
+                // TRACKING_SUCCESS) so the dump itself reveals when the
+                // debug-inspection slot is empty/stale vs. freshly populated
+                // (see LANDMARKS note atop this file). GetResultLandmarks new[]s
+                // the array and never frees it (xrslam-interface, confirmed by
+                // jni/wpslam_jni.cpp's own deviation notes) -- owned+freed here.
+                if (!dump_jsonl_path.empty()) {
+                    XRSLAMLandmarks lm;
+                    lm.landmarks = nullptr;
+                    lm.num_landmarks = 0;
+                    try {
+                        XRSLAMGetResult(XRSLAM_RESULT_LANDMARKS, &lm);
+                    } catch (...) {
+                        lm.landmarks = nullptr;
+                        lm.num_landmarks = 0;
+                    }
+                    if (lm.landmarks != nullptr && lm.num_landmarks > 0) {
+                        long n = lm.num_landmarks;
+                        long keep = (dump_max_landmarks > 0 && n > dump_max_landmarks)
+                                        ? dump_max_landmarks
+                                        : n;
+                        pending_landmarks_xyz.reserve((size_t)keep * 3);
+                        for (long li = 0; li < keep; li++) {
+                            pending_landmarks_xyz.push_back(lm.landmarks[li].x);
+                            pending_landmarks_xyz.push_back(lm.landmarks[li].y);
+                            pending_landmarks_xyz.push_back(lm.landmarks[li].z);
+                        }
+                    }
+                    delete[] lm.landmarks;
+                }
+
                 if (processed % 50 == 0)
                     fprintf(stderr, "... %ld frames processed\n", processed);
             } else {
@@ -460,6 +624,11 @@ int main(int argc, char **argv) {
         }
     }
     flush_pending();
+
+    if (dump_jsonl_stream.is_open()) {
+        dump_jsonl_stream.close();
+        fprintf(stderr, "wrote %s (%ld rows)\n", dump_jsonl_path.c_str(), open_frame_idx + 1);
+    }
 
     XRSLAMDestroy();
     if (!generated_slam_cfg_path.empty())
