@@ -657,9 +657,17 @@ int main(int argc, char **argv) {
                     qualified.landmarks = nullptr;
                     qualified.num_landmarks = 0;
                     try {
-                        XRSLAMGetResult(XRSLAM_RESULT_QUALIFIED_LANDMARKS,
-                                        &qualified);
+                        XRSLAMGetQualifiedLandmarks(&qualified);
+                    } catch (const std::exception &e) {
+                        fprintf(stderr,
+                                "qualified landmarks exception at frame %ld: %s\n",
+                                processed, e.what());
+                        qualified.landmarks = nullptr;
+                        qualified.num_landmarks = 0;
                     } catch (...) {
+                        fprintf(stderr,
+                                "qualified landmarks unknown exception at frame %ld\n",
+                                processed);
                         qualified.landmarks = nullptr;
                         qualified.num_landmarks = 0;
                     }

@@ -91,4 +91,8 @@ void XRSLAMGetResult(XRSLAMResultType result_type, // result type
     }
 }
 
+void XRSLAMGetQualifiedLandmarks(XRSLAMQualifiedLandmarks *landmarks) {
+    xrslam::XRSLAMManager::Instance().GetResultQualifiedLandmarks(landmarks);
+}
+
 void XRSLAMDestroy() { xrslam::XRSLAMManager::Instance().Destroy(); }

@@ -254,6 +254,13 @@ void XRSLAMSetViewer(void *viewer);
 void XRSLAMGetResult(XRSLAMResultType result_type, void *result_data);
 
 /**
+ * Direct Waypoint extension for quality-preserving landmarks. Kept explicit
+ * instead of relying only on enum dispatch so mixed consumers cannot silently
+ * disagree on an extended XRSLAMResultType ABI.
+ */
+void XRSLAMGetQualifiedLandmarks(XRSLAMQualifiedLandmarks *landmarks);
+
+/**
  * @brief destroy SLAM system
  */
 void XRSLAMDestroy();
