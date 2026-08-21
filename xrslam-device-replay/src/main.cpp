@@ -482,7 +482,7 @@ int main(int argc, char **argv) {
             for (size_t k = 0; k < pending_landmarks_xyz.size(); k++) {
                 if (k)
                     row << ",";
-                row << pending_landmarks_xyz[k];
+                row << json_number(pending_landmarks_xyz[k]);
             }
             row << "]"
                 << ",\"n_qualified_landmarks\":" << pending_qualified_landmarks.size()
