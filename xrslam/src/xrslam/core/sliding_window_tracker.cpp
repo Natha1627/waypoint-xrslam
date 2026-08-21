@@ -97,7 +97,10 @@ bool SlidingWindowTracker::track() {
         refine_subwindow();
     }
 
-    inspect_debug(sliding_window_landmarks, landmarks) {
+    // This storage backs the public landmark APIs. Keeping it behind
+    // XRSLAM_ENABLE_DEBUG_INSPECTION makes release Android builds silently
+    // return an empty map even while tracking succeeds.
+    inspect(sliding_window_landmarks, landmarks) {
         std::vector<Landmark> points;
         points.reserve(map->track_num());
         for (size_t i = 0; i < map->track_num(); ++i) {

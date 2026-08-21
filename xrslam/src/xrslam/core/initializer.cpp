@@ -133,7 +133,9 @@ std::unique_ptr<SlidingWindowTracker> Initializer::initialize() {
         map->get_frame(i)->tag(FT_KEYFRAME) = true;
     }
 
-    inspect_debug(sliding_window_landmarks, landmarks) {
+    // This storage backs the public landmark APIs and is part of the runtime
+    // contract, not debug-only telemetry.
+    inspect(sliding_window_landmarks, landmarks) {
         std::vector<Landmark> points;
         points.reserve(map->track_num());
         for (size_t i = 0; i < map->track_num(); ++i) {
