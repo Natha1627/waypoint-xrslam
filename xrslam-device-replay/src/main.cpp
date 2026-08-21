@@ -96,6 +96,7 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -106,6 +107,14 @@
 #include <sstream>
 #include <string>
 #include <vector>
+
+static std::string json_number(double value) {
+    if (!std::isfinite(value))
+        return "null";
+    std::ostringstream out;
+    out << std::setprecision(12) << value;
+    return out.str();
+}
 
 namespace {
 
@@ -404,6 +413,7 @@ int main(int argc, char **argv) {
     double pending_camera_pose[7] = {0, 0, 0, 0, 0, 0, 1}; // camera: same layout
     bool pending_camera_pose_valid = false;
     std::vector<double> pending_landmarks_xyz; // flat world-frame xyz
+    std::vector<XRSLAMQualifiedLandmark> pending_qualified_landmarks;
 
     std::ofstream dump_jsonl_stream;
     if (!dump_jsonl_path.empty()) {
@@ -475,6 +485,35 @@ int main(int argc, char **argv) {
                 row << pending_landmarks_xyz[k];
             }
             row << "]"
+                << ",\"n_qualified_landmarks\":" << pending_qualified_landmarks.size()
+                << ",\"qualified_landmarks\":[";
+            for (size_t k = 0; k < pending_qualified_landmarks.size(); ++k) {
+                if (k)
+                    row << ",";
+                const XRSLAMQualifiedLandmark &q = pending_qualified_landmarks[k];
+                row << "{\"track_id\":" << q.track_id
+                    << ",\"xyz\":[" << json_number(q.x) << ","
+                    << json_number(q.y) << "," << json_number(q.z) << "]"
+                    << ",\"inverse_depth\":" << json_number(q.inverse_depth)
+                    << ",\"triangulation_angle_rad\":"
+                    << json_number(q.triangulation_angle_rad)
+                    << ",\"mean_reprojection_error_px\":"
+                    << json_number(q.mean_reprojection_error_px)
+                    << ",\"max_reprojection_error_px\":"
+                    << json_number(q.max_reprojection_error_px)
+                    << ",\"observation_px\":[" << json_number(q.observation_u_px)
+                    << "," << json_number(q.observation_v_px) << "]"
+                    << ",\"first_t\":" << json_number(q.first_observation_timestamp)
+                    << ",\"last_t\":" << json_number(q.last_observation_timestamp)
+                    << ",\"observation_count\":" << q.observation_count
+                    << ",\"life\":" << q.life
+                    << ",\"valid\":" << (q.valid ? "true" : "false")
+                    << ",\"triangulated\":" << (q.triangulated ? "true" : "false")
+                    << ",\"outlier\":" << (q.outlier ? "true" : "false")
+                    << ",\"static\":" << (q.static_track ? "true" : "false")
+                    << "}";
+            }
+            row << "]"
                 << ",\"frame_ms\":" << std::setprecision(4) << accum_ms << std::setprecision(9)
                 << "}\n";
             dump_jsonl_stream << row.str();
@@ -535,6 +574,7 @@ int main(int argc, char **argv) {
             pending_camera_pose[6] = 1;
             pending_camera_pose_valid = false;
             pending_landmarks_xyz.clear();
+            pending_qualified_landmarks.clear();
 
             double t_s = (double)(it.t_ns - epoch_ns) / 1e9;
             XRSLAMImage image;
@@ -612,6 +652,28 @@ int main(int argc, char **argv) {
                         }
                     }
                     delete[] lm.landmarks;
+
+                    XRSLAMQualifiedLandmarks qualified;
+                    qualified.landmarks = nullptr;
+                    qualified.num_landmarks = 0;
+                    try {
+                        XRSLAMGetResult(XRSLAM_RESULT_QUALIFIED_LANDMARKS,
+                                        &qualified);
+                    } catch (...) {
+                        qualified.landmarks = nullptr;
+                        qualified.num_landmarks = 0;
+                    }
+                    if (qualified.landmarks != nullptr &&
+                        qualified.num_landmarks > 0) {
+                        long n = qualified.num_landmarks;
+                        long keep =
+                            (dump_max_landmarks > 0 && n > dump_max_landmarks)
+                                ? dump_max_landmarks
+                                : n;
+                        pending_qualified_landmarks.assign(
+                            qualified.landmarks, qualified.landmarks + keep);
+                    }
+                    delete[] qualified.landmarks;
                 }
 
                 if (processed % 50 == 0)

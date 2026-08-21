@@ -103,10 +103,7 @@ bool SlidingWindowTracker::track() {
         for (size_t i = 0; i < map->track_num(); ++i) {
             if (Track *track = map->get_track(i)) {
                 if (track->tag(TT_VALID)) {
-                    Landmark point;
-                    point.p = track->get_landmark_point();
-                    point.triangulated = track->tag(TT_TRIANGULATED);
-                    points.push_back(point);
+                    points.push_back(make_inspection_landmark(*track));
                 }
             }
         }

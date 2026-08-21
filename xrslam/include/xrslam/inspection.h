@@ -2,10 +2,13 @@
 #define XRSLAM_INSPECTOR_H
 
 #include <any>
+#include <cstdint>
 #include <mutex>
 #include <xrslam/xrslam.h>
 
 namespace xrslam {
+
+class Track;
 
 using point2i = vector<2, false, int>;
 using color3b = vector<3, false, unsigned char>;
@@ -21,8 +24,23 @@ struct KeyframeState {
 
 struct Landmark {
     vector<3> p;
-    bool triangulated;
+    uint64_t track_id = 0;
+    bool valid = false;
+    bool triangulated = false;
+    bool outlier = false;
+    bool static_track = false;
+    size_t observation_count = 0;
+    size_t life = 0;
+    double inverse_depth = 0.0;
+    double triangulation_angle_rad = 0.0;
+    double mean_reprojection_error_px = 0.0;
+    double max_reprojection_error_px = 0.0;
+    vector<2> last_observation_px = vector<2>::Zero();
+    double first_observation_timestamp = 0.0;
+    double last_observation_timestamp = 0.0;
 };
+
+Landmark make_inspection_landmark(const Track &track);
 
 class InspectPainter {
   public:

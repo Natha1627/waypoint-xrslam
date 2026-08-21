@@ -64,6 +64,10 @@ void XRSLAMGetResult(XRSLAMResultType result_type, // result type
         xrslam::XRSLAMManager::Instance().GetResultLandmarks(
             static_cast<XRSLAMLandmarks *>(result_data));
         break;
+    case XRSLAM_RESULT_QUALIFIED_LANDMARKS:
+        xrslam::XRSLAMManager::Instance().GetResultQualifiedLandmarks(
+            static_cast<XRSLAMQualifiedLandmarks *>(result_data));
+        break;
     case XRSLAM_RESULT_FEATURES:
         xrslam::XRSLAMManager::Instance().GetResultFeatures(
             static_cast<XRSLAMFeatures *>(result_data));

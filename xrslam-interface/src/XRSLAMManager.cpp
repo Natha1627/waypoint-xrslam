@@ -214,6 +214,39 @@ void XRSLAMManager::GetResultLandmarks(XRSLAMLandmarks *landmarks) const {
     }
 }
 
+void XRSLAMManager::GetResultQualifiedLandmarks(
+    XRSLAMQualifiedLandmarks *landmarks) const {
+    landmarks->landmarks = nullptr;
+    landmarks->num_landmarks = 0;
+    inspect_debug(sliding_window_landmarks, swlandmarks) {
+        auto pts = std::any_cast<std::vector<xrslam::Landmark>>(swlandmarks);
+        landmarks->num_landmarks = static_cast<int>(pts.size());
+        landmarks->landmarks = new XRSLAMQualifiedLandmark[pts.size()];
+        for (size_t i = 0; i < pts.size(); ++i) {
+            const xrslam::Landmark &src = pts[i];
+            XRSLAMQualifiedLandmark &dst = landmarks->landmarks[i];
+            dst.track_id = src.track_id;
+            dst.x = src.p.x();
+            dst.y = src.p.y();
+            dst.z = src.p.z();
+            dst.inverse_depth = src.inverse_depth;
+            dst.triangulation_angle_rad = src.triangulation_angle_rad;
+            dst.mean_reprojection_error_px = src.mean_reprojection_error_px;
+            dst.max_reprojection_error_px = src.max_reprojection_error_px;
+            dst.observation_u_px = src.last_observation_px.x();
+            dst.observation_v_px = src.last_observation_px.y();
+            dst.first_observation_timestamp = src.first_observation_timestamp;
+            dst.last_observation_timestamp = src.last_observation_timestamp;
+            dst.observation_count = static_cast<int>(src.observation_count);
+            dst.life = static_cast<int>(src.life);
+            dst.valid = src.valid ? 1 : 0;
+            dst.triangulated = src.triangulated ? 1 : 0;
+            dst.outlier = src.outlier ? 1 : 0;
+            dst.static_track = src.static_track ? 1 : 0;
+        }
+    }
+}
+
 void XRSLAMManager::GetResultFeatures(XRSLAMFeatures *features) const {}
 
 void XRSLAMManager::GetResultBias(XRSLAMIMUBias *bias) const {

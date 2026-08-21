@@ -36,6 +36,7 @@ class XRSLAMManager {
     void GetResultBodyPose(XRSLAMPose *pose) const;
     void GetResultState(XRSLAMState *state) const;
     void GetResultLandmarks(XRSLAMLandmarks *landmarks) const;
+    void GetResultQualifiedLandmarks(XRSLAMQualifiedLandmarks *landmarks) const;
     void GetResultFeatures(XRSLAMFeatures *features) const;
     void GetResultBias(XRSLAMIMUBias *bias) const;
     void GetResultVersion(XRSLAMStringOutput *output) const;
