@@ -201,7 +201,8 @@ void XRSLAMManager::GetResultState(XRSLAMState *state) const {
     }
 }
 void XRSLAMManager::GetResultLandmarks(XRSLAMLandmarks *landmarks) const {
-    inspect_debug(sliding_window_landmarks, swlandmarks) {
+    // Public runtime result: release builds must be able to read the map.
+    inspect(sliding_window_landmarks, swlandmarks) {
         auto pts = std::any_cast<std::vector<xrslam::Landmark>>(swlandmarks);
         landmarks->num_landmarks = pts.size();
         landmarks->landmarks = new XRSLAMLandmark[pts.size()];
@@ -218,7 +219,8 @@ void XRSLAMManager::GetResultQualifiedLandmarks(
     XRSLAMQualifiedLandmarks *landmarks) const {
     landmarks->landmarks = nullptr;
     landmarks->num_landmarks = 0;
-    inspect_debug(sliding_window_landmarks, swlandmarks) {
+    // Public runtime result: release builds must be able to read the map.
+    inspect(sliding_window_landmarks, swlandmarks) {
         auto pts = std::any_cast<std::vector<xrslam::Landmark>>(swlandmarks);
         landmarks->num_landmarks = static_cast<int>(pts.size());
         landmarks->landmarks = new XRSLAMQualifiedLandmark[pts.size()];
