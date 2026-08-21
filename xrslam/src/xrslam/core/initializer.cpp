@@ -140,9 +140,7 @@ std::unique_ptr<SlidingWindowTracker> Initializer::initialize() {
         points.reserve(map->track_num());
         for (size_t i = 0; i < map->track_num(); ++i) {
             if (Track *track = map->get_track(i)) {
-                if (track->tag(TT_VALID)) {
-                    points.push_back(make_inspection_landmark(*track));
-                }
+                points.push_back(make_inspection_landmark(*track));
             }
         }
         landmarks = std::move(points);

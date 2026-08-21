@@ -201,13 +201,19 @@ void XRSLAMManager::GetResultState(XRSLAMState *state) const {
     }
 }
 void XRSLAMManager::GetResultLandmarks(XRSLAMLandmarks *landmarks) const {
+    landmarks->landmarks = nullptr;
+    landmarks->num_landmarks = 0;
     // Public runtime result: release builds must be able to read the map.
     inspect(sliding_window_landmarks, swlandmarks) {
-        auto pts = std::any_cast<std::vector<xrslam::Landmark>>(swlandmarks);
-        landmarks->num_landmarks = pts.size();
-        landmarks->landmarks = new XRSLAMLandmark[pts.size()];
-        for (int i = 0; i < pts.size(); i++) {
-            xrslam::vector<3> cur_p = pts[i].p;
+        const auto *pts =
+            std::any_cast<std::vector<xrslam::Landmark>>(&swlandmarks);
+        if (pts == nullptr) {
+            return;
+        }
+        landmarks->num_landmarks = static_cast<int>(pts->size());
+        landmarks->landmarks = new XRSLAMLandmark[pts->size()];
+        for (size_t i = 0; i < pts->size(); i++) {
+            xrslam::vector<3> cur_p = (*pts)[i].p;
             landmarks->landmarks[i].x = cur_p(0);
             landmarks->landmarks[i].y = cur_p(1);
             landmarks->landmarks[i].z = cur_p(2);
@@ -221,11 +227,15 @@ void XRSLAMManager::GetResultQualifiedLandmarks(
     landmarks->num_landmarks = 0;
     // Public runtime result: release builds must be able to read the map.
     inspect(sliding_window_landmarks, swlandmarks) {
-        auto pts = std::any_cast<std::vector<xrslam::Landmark>>(swlandmarks);
-        landmarks->num_landmarks = static_cast<int>(pts.size());
-        landmarks->landmarks = new XRSLAMQualifiedLandmark[pts.size()];
-        for (size_t i = 0; i < pts.size(); ++i) {
-            const xrslam::Landmark &src = pts[i];
+        const auto *pts =
+            std::any_cast<std::vector<xrslam::Landmark>>(&swlandmarks);
+        if (pts == nullptr) {
+            return;
+        }
+        landmarks->num_landmarks = static_cast<int>(pts->size());
+        landmarks->landmarks = new XRSLAMQualifiedLandmark[pts->size()];
+        for (size_t i = 0; i < pts->size(); ++i) {
+            const xrslam::Landmark &src = (*pts)[i];
             XRSLAMQualifiedLandmark &dst = landmarks->landmarks[i];
             dst.track_id = src.track_id;
             dst.x = src.p.x();
