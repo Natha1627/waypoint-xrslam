@@ -1,5 +1,7 @@
 #include "XRSLAMManager.h"
 
+#include <cmath>
+
 #define XRSLAM_VERSION "0.1.0"
 
 namespace xrslam {
@@ -210,13 +212,33 @@ void XRSLAMManager::GetResultLandmarks(XRSLAMLandmarks *landmarks) const {
         if (pts == nullptr) {
             return;
         }
-        landmarks->num_landmarks = static_cast<int>(pts->size());
-        landmarks->landmarks = new XRSLAMLandmark[pts->size()];
-        for (size_t i = 0; i < pts->size(); i++) {
-            xrslam::vector<3> cur_p = (*pts)[i].p;
-            landmarks->landmarks[i].x = cur_p(0);
-            landmarks->landmarks[i].y = cur_p(1);
-            landmarks->landmarks[i].z = cur_p(2);
+        // Keep the legacy XYZ API safe for older consumers (loop closure in
+        // particular): the internal publisher intentionally contains every
+        // active track so the qualified API can expose its full diagnostics,
+        // including provisional and rejected tracks. The legacy API has no
+        // flags, therefore publishing those rows would turn invalid/infinite
+        // positions into apparently valid geometry.
+        size_t eligible_count = 0;
+        for (const auto &point : *pts) {
+            eligible_count += point.valid && point.triangulated &&
+                              point.static_track && !point.outlier &&
+                              std::isfinite(point.p.x()) &&
+                              std::isfinite(point.p.y()) &&
+                              std::isfinite(point.p.z());
+        }
+        landmarks->num_landmarks = static_cast<int>(eligible_count);
+        landmarks->landmarks = new XRSLAMLandmark[eligible_count];
+        size_t dst_index = 0;
+        for (const auto &point : *pts) {
+            if (!point.valid || !point.triangulated || !point.static_track ||
+                point.outlier || !std::isfinite(point.p.x()) ||
+                !std::isfinite(point.p.y()) || !std::isfinite(point.p.z())) {
+                continue;
+            }
+            landmarks->landmarks[dst_index].x = point.p.x();
+            landmarks->landmarks[dst_index].y = point.p.y();
+            landmarks->landmarks[dst_index].z = point.p.z();
+            ++dst_index;
         }
     }
 }
