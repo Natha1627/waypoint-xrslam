@@ -21,10 +21,22 @@
 //    otherwise (log + neutral return, never throw/abort, no exception can
 //    escape a call made from Swift).
 //
-// UNVERIFIED: this file has not yet been compiled (no Mac available locally;
-// see rn/.github/workflows/ios-slam-engine.yml for the CI-only build/link
-// attempt and rn's chantier report for its actual status). Treat as
-// carefully-reasoned-but-unbuilt until that workflow goes green.
+// "no exception can escape a call made from Swift" was stated here but NOT
+// actually enforced until 2026-08-23: every XRSLAM* call below was
+// unprotected. A production crash (Sentry, fatal, instant -- see rn's
+// IOS-SLAM-WIRING.md) traced an uncaught yaml-cpp exception from
+// XRSLAMCreate's device_config parsing straight through this file into
+// Swift, which cannot catch a C++ exception crossing an Objective-C++
+// boundary -- it crashes the whole process. Every XRSLAM* call site is now
+// wrapped in try/catch (same idiom, same day, applied to wpslam_jni.cpp
+// too), converting any throw into this file's existing log+neutral-return
+// policy instead of letting it escape.
+//
+// VERIFIED: this file compiles, links, and has run successfully as part of
+// a real signed build (App Store Connect, version 1.1 build 77, 2026-08-23,
+// via rn's ios-testflight.yml) -- the crash above is itself proof it ran on
+// a real device. No longer "unbuilt"; see rn/.github/workflows/
+// ios-slam-engine.yml for the CI build/link path.
 
 #import "WpSlamShim.h"
 
@@ -32,6 +44,7 @@
 
 #include <cstdio>
 #include <deque>
+#include <exception>
 #include <fstream>
 #include <string>
 #include <vector>
@@ -193,7 +206,26 @@ void *g_activeToken = nullptr;
     void *configOut = nullptr;
 
     // Attempt 1: configYamlPath used for BOTH slam_config and device_config.
-    int created = XRSLAMCreate(cfgPath.c_str(), cfgPath.c_str(), "", "Waypoint SLAM Live", &configOut);
+    //
+    // try/catch (production crash, 2026-08-23 -- rn's IOS-SLAM-WIRING.md):
+    // XRSLAMCreate can throw (e.g. yaml-cpp inside xrslam-extra's
+    // device_config parsing, on a malformed config) instead of returning 0.
+    // Swift cannot catch a C++ exception crossing an Objective-C++ boundary
+    // -- if it escapes this method uncaught, it crashes the whole process,
+    // which is exactly what happened. Converts a throw into the same
+    // `created == 0` shape the rest of this function already handles, so no
+    // downstream logic needs to change. Same fix applied to the JNI mirror
+    // of this shim (rn's wpslam_jni.cpp) the same day.
+    int created = 0;
+    try {
+        created = XRSLAMCreate(cfgPath.c_str(), cfgPath.c_str(), "", "Waypoint SLAM Live", &configOut);
+    } catch (const std::exception &e) {
+        NSLog(@"[WpSlam] createWithConfigYamlPath: XRSLAMCreate [combined attempt] threw: %s", e.what());
+        created = 0;
+    } catch (...) {
+        NSLog(@"[WpSlam] createWithConfigYamlPath: XRSLAMCreate [combined attempt] threw a non-std exception");
+        created = 0;
+    }
     std::string generatedPath;
 
     if (!created) {
@@ -208,7 +240,15 @@ void *g_activeToken = nullptr;
             generatedPath.clear();
         } else {
             configOut = nullptr;
-            created = XRSLAMCreate(generatedPath.c_str(), cfgPath.c_str(), "", "Waypoint SLAM Live", &configOut);
+            try {
+                created = XRSLAMCreate(generatedPath.c_str(), cfgPath.c_str(), "", "Waypoint SLAM Live", &configOut);
+            } catch (const std::exception &e) {
+                NSLog(@"[WpSlam] createWithConfigYamlPath: XRSLAMCreate [fallback attempt] threw: %s", e.what());
+                created = 0;
+            } catch (...) {
+                NSLog(@"[WpSlam] createWithConfigYamlPath: XRSLAMCreate [fallback attempt] threw a non-std exception");
+                created = 0;
+            }
             if (!created) {
                 NSLog(@"[WpSlam] createWithConfigYamlPath: XRSLAMCreate [fallback attempt] also failed");
                 std::remove(generatedPath.c_str());
@@ -240,7 +280,13 @@ void *g_activeToken = nullptr;
         return;
     }
 
-    XRSLAMDestroy();
+    try {
+        XRSLAMDestroy();
+    } catch (const std::exception &e) {
+        NSLog(@"[WpSlam] destroy: XRSLAMDestroy threw: %s -- continuing teardown anyway", e.what());
+    } catch (...) {
+        NSLog(@"[WpSlam] destroy: XRSLAMDestroy threw a non-std exception -- continuing teardown anyway");
+    }
 
     if (!_generatedSlamConfigPath->empty()) {
         std::remove(_generatedSlamConfigPath->c_str());
@@ -276,33 +322,45 @@ void *g_activeToken = nullptr;
     image.channel = 1;
     image.ext = nullptr;
 
-    XRSLAMPushSensorData(XRSLAM_SENSOR_CAMERA, &image);
+    // try/catch around the whole block (production crash, 2026-08-23 -- see
+    // createWithConfigYamlPath:'s comment above for the full story). Any of
+    // PushSensorData/RunOneFrame/GetResult can throw from deep inside the
+    // VIO pipeline (yaml-cpp, Ceres, OpenCV) at any point during a live
+    // session, not just at creation -- Swift cannot catch a C++ exception
+    // crossing this Objective-C++ boundary, so it must never escape here.
+    try {
+        XRSLAMPushSensorData(XRSLAM_SENSOR_CAMERA, &image);
 
-    // Mirror the harness's own guard: only run the frame once IMU has flowed
-    // at least once on both channels.
-    if (_hasAccel && _hasGyro) {
-        XRSLAMRunOneFrame();
+        // Mirror the harness's own guard: only run the frame once IMU has flowed
+        // at least once on both channels.
+        if (_hasAccel && _hasGyro) {
+            XRSLAMRunOneFrame();
 
-        XRSLAMState state;
-        XRSLAMGetResult(XRSLAM_RESULT_STATE, &state);
-        _state = (int)state;
+            XRSLAMState state;
+            XRSLAMGetResult(XRSLAM_RESULT_STATE, &state);
+            _state = (int)state;
 
-        if (state == XRSLAM_STATE_TRACKING_SUCCESS) {
-            XRSLAMPose pose;
-            XRSLAMGetResult(XRSLAM_RESULT_BODY_POSE, &pose);
-            _pose[0] = pose.translation[0];
-            _pose[1] = pose.translation[1];
-            _pose[2] = pose.translation[2];
-            _pose[3] = pose.quaternion[0];
-            _pose[4] = pose.quaternion[1];
-            _pose[5] = pose.quaternion[2];
-            _pose[6] = pose.quaternion[3];
-            _hasPose = YES;
+            if (state == XRSLAM_STATE_TRACKING_SUCCESS) {
+                XRSLAMPose pose;
+                XRSLAMGetResult(XRSLAM_RESULT_BODY_POSE, &pose);
+                _pose[0] = pose.translation[0];
+                _pose[1] = pose.translation[1];
+                _pose[2] = pose.translation[2];
+                _pose[3] = pose.quaternion[0];
+                _pose[4] = pose.quaternion[1];
+                _pose[5] = pose.quaternion[2];
+                _pose[6] = pose.quaternion[3];
+                _hasPose = YES;
 
-            [self pushTrajectoryPointX:(float)pose.translation[0]
-                                      y:(float)pose.translation[1]
-                                      z:(float)pose.translation[2]];
+                [self pushTrajectoryPointX:(float)pose.translation[0]
+                                          y:(float)pose.translation[1]
+                                          z:(float)pose.translation[2]];
+            }
         }
+    } catch (const std::exception &e) {
+        NSLog(@"[WpSlam] pushGray: an XRSLAM call threw: %s", e.what());
+    } catch (...) {
+        NSLog(@"[WpSlam] pushGray: an XRSLAM call threw a non-std exception");
     }
 }
 
@@ -312,8 +370,14 @@ void *g_activeToken = nullptr;
     }
     double tSeconds = [self toSeconds:tNs];
     XRSLAMAcceleration acc = {{(double)x, (double)y, (double)z}, tSeconds};
-    XRSLAMPushSensorData(XRSLAM_SENSOR_ACCELERATION, &acc);
-    _hasAccel = YES;
+    try {
+        XRSLAMPushSensorData(XRSLAM_SENSOR_ACCELERATION, &acc);
+        _hasAccel = YES;
+    } catch (const std::exception &e) {
+        NSLog(@"[WpSlam] pushAccelX: XRSLAMPushSensorData threw: %s", e.what());
+    } catch (...) {
+        NSLog(@"[WpSlam] pushAccelX: XRSLAMPushSensorData threw a non-std exception");
+    }
 }
 
 - (void)pushGyroX:(float)x y:(float)y z:(float)z tNs:(int64_t)tNs {
@@ -322,8 +386,14 @@ void *g_activeToken = nullptr;
     }
     double tSeconds = [self toSeconds:tNs];
     XRSLAMGyroscope gyr = {{(double)x, (double)y, (double)z}, tSeconds};
-    XRSLAMPushSensorData(XRSLAM_SENSOR_GYROSCOPE, &gyr);
-    _hasGyro = YES;
+    try {
+        XRSLAMPushSensorData(XRSLAM_SENSOR_GYROSCOPE, &gyr);
+        _hasGyro = YES;
+    } catch (const std::exception &e) {
+        NSLog(@"[WpSlam] pushGyroX: XRSLAMPushSensorData threw: %s", e.what());
+    } catch (...) {
+        NSLog(@"[WpSlam] pushGyroX: XRSLAMPushSensorData threw a non-std exception");
+    }
 }
 
 - (WpSlamTrackingState)state {
