@@ -37,6 +37,46 @@
 // via rn's ios-testflight.yml) -- the crash above is itself proof it ran on
 // a real device. No longer "unbuilt"; see rn/.github/workflows/
 // ios-slam-engine.yml for the CI build/link path.
+//
+// 2026-08-26 -- the try/catch above did its job (no more crash on a fresh
+// TestFlight build, run 32887684663 per rn's IOS-CRASH-DEMARRER-2026-08-25.md
+// follow-up), but -createWithConfigYamlPath: now returns NO on-device
+// ("suivi indisponible... createWithConfigYamlPath returned false"), meaning
+// BOTH XRSLAMCreate attempts below still throw -- just caught instead of
+// crashing. Two changes made investigating that, without a device/Mac
+// available (same constraint as always for this chantier -- every claim
+// below is a static-analysis finding, NOT a confirmed device fix):
+//  1. `kFallbackSlamConfigYaml` (below) still carried the SAME malformed
+//     `%YAML:1.0` directive line that caused the ORIGINAL crash (see the
+//     2026-08-23 note above) -- byte-for-byte the text `SlamConfigYaml.swift`
+//     already dropped from the PRIMARY generated config. Whether this line
+//     alone is actually harmful to this yaml-cpp build is now genuinely
+//     unclear (Android's Kotlin-generated config still emits it too, written
+//     via a plain `std::ofstream`-equivalent with no NSString/Foundation
+//     encoding step in between, same as this fallback constant -- and
+//     Android does not reproduce this failure in the field, which argues the
+//     directive line by itself is likely harmless and the ORIGINAL iOS crash
+//     was more likely a Foundation string-encoding artifact specific to the
+//     `String.write(...encoding:.utf8)` call already replaced by
+//     `Data(utf8)` in `SlamModuleIOS.swift`). Removed anyway for zero-cost
+//     parity with the primary generator -- there is no upside to leaving a
+//     known-suspicious token in code that is otherwise byte-identical by
+//     design, and it removes one variable from the next diagnosis regardless
+//     of whether it was ever the actual cause.
+//  2. `-lastCreateDiagnostic` (new): every attempt's outcome -- which
+//     attempt, the exact path(s) used, whether each file existed on disk and
+//     its byte size, the first 8 bytes of each file in hex (a BOM would show
+//     up here immediately as `efbbbf...`), and the exact C++ exception
+//     class+message if one was thrown -- is now accumulated into a single
+//     diagnostic string instead of only ever reaching NSLog (invisible on a
+//     TestFlight/production build with nobody attached in Xcode).
+//     `SlamModuleIOS.swift` now reads this and folds it into the `reason`
+//     string the JS layer already surfaces on-screen (the pill text the
+//     founder read verbatim to report this bug) AND into the Sentry
+//     breadcrumb `SlamCaptureScreen.tsx` already sends on this exact path --
+//     so if this fix is incomplete, the NEXT tap of "Capturer" makes the
+//     real cause visible with ZERO extra tooling, no new Sentry lookup, no
+//     Xcode required.
 
 #import "WpSlamShim.h"
 
@@ -46,7 +86,10 @@
 #include <deque>
 #include <exception>
 #include <fstream>
+#include <iomanip>
+#include <sstream>
 #include <string>
+#include <typeinfo>
 #include <vector>
 
 namespace {
@@ -54,8 +97,17 @@ namespace {
 // Byte-identical to xrslam-device-replay/src/main.cpp's kEmbeddedSlamConfigYaml
 // / wpslam_jni.cpp's kFallbackSlamConfigYaml -- the "config yaml validated by
 // the replay" the contract points at. Used ONLY as the fallback attempt.
-const char *kFallbackSlamConfigYaml = R"YAML(%YAML:1.0
-output:
+//
+// 2026-08-26: the leading `%YAML:1.0` line present in the Android/replay
+// originals is deliberately DROPPED here (the one place this file already
+// diverges byte-for-byte from its siblings) -- same reasoning as
+// `SlamConfigYaml.swift`'s own removal of this line: it is not valid
+// `%YAML major.minor` directive syntax, carries no numeric/semantic weight,
+// and was the prime suspect (alongside a possible Foundation string-encoding
+// artifact, since fixed) in the original 2026-08-23 crash. See this file's
+// header comment for the full, honest uncertainty note -- this is a
+// precautionary parity fix, not a confirmed-device fix.
+const char *kFallbackSlamConfigYaml = R"YAML(output:
   q_bo: [ 0.0, 0.0, 0.0, 1.0 ] # x y z w
   p_bo: [ 0.0, 0.0, 0.0 ] # x y z [m]
 
@@ -126,6 +178,37 @@ bool writeFallbackSlamConfig(const std::string &path) {
     return !f.fail();
 }
 
+// 2026-08-26 diagnostic (see this file's header comment): describes a config
+// file EXACTLY as XRSLAMCreate/yaml-cpp would see it on this call, read
+// independently of Swift's own write confirmation -- if Swift's
+// `Data(yamlText.utf8).write(...)` reported success but this C++ side still
+// cannot open/read the same path (sandbox path resolution mismatch, timing,
+// anything), that shows up here as [MISSING/UNREADABLE] instead of silently
+// falling through to a generic "returned false". The first-bytes hex dump
+// exists specifically to catch a BOM or other leading-byte artifact ahead of
+// yaml-cpp's scanner (the prime suspect in the original 2026-08-23 crash,
+// see header comment) -- a UTF-8 BOM reads as `efbbbf...` here, unmistakably.
+std::string describeConfigFile(const std::string &path) {
+    std::ifstream f(path, std::ios::in | std::ios::binary);
+    if (!f.is_open()) {
+        return path + " [MISSING/UNREADABLE]";
+    }
+    f.seekg(0, std::ios::end);
+    std::streamoff size = f.tellg();
+    f.seekg(0, std::ios::beg);
+    unsigned char head[8] = {0};
+    f.read(reinterpret_cast<char *>(head), sizeof(head));
+    std::streamsize got = f.gcount();
+    std::ostringstream hex;
+    hex << std::hex << std::setfill('0');
+    for (std::streamsize i = 0; i < got; ++i) {
+        hex << std::setw(2) << static_cast<int>(head[i]);
+    }
+    std::ostringstream out;
+    out << path << " [size=" << size << "B first" << got << "B=" << hex.str() << "]";
+    return out.str();
+}
+
 // XRSLAM has no per-instance handle -- it is a single global engine. Exactly
 // one WpSlamEngine (the ObjC wrapper below) may be "active" at a time; this
 // pointer identifies which one, so a stale/second instance's calls become
@@ -146,6 +229,7 @@ void *g_activeToken = nullptr;
     double _pose[7]; // px,py,pz,qx,qy,qz,qw
     std::deque<Point3> *_trajectory;
     std::string *_generatedSlamConfigPath;
+    std::string *_lastCreateDiagnostic; // 2026-08-26, see -lastCreateDiagnostic
 }
 @end
 
@@ -162,6 +246,7 @@ void *g_activeToken = nullptr;
         _hasPose = NO;
         _trajectory = new std::deque<Point3>();
         _generatedSlamConfigPath = new std::string();
+        _lastCreateDiagnostic = new std::string();
     }
     return self;
 }
@@ -172,6 +257,15 @@ void *g_activeToken = nullptr;
     }
     delete _trajectory;
     delete _generatedSlamConfigPath;
+    delete _lastCreateDiagnostic;
+}
+
+// 2026-08-26: see this file's header comment. Populated by every
+// -createWithConfigYamlPath: call (success or failure) -- read by
+// SlamModuleIOS.swift ONLY on failure today, but always fresh so a future
+// caller could log it unconditionally without changing this method.
+- (nullable NSString *)lastCreateDiagnostic {
+    return _lastCreateDiagnostic->empty() ? nil : [NSString stringWithUTF8String:_lastCreateDiagnostic->c_str()];
 }
 
 - (BOOL)isActive {
@@ -193,13 +287,23 @@ void *g_activeToken = nullptr;
 }
 
 - (BOOL)createWithConfigYamlPath:(NSString *)configYamlPath {
+    // 2026-08-26: accumulated regardless of outcome, exposed via
+    // -lastCreateDiagnostic (see this file's header comment) -- every branch
+    // below appends to it instead of (or in addition to) NSLog, so a
+    // TestFlight/production build with nobody attached in Xcode still gets
+    // the full picture through SlamModuleIOS.swift's `reason` string.
+    std::ostringstream diag;
+    _lastCreateDiagnostic->clear();
+
     if (g_activeToken != nullptr) {
         NSLog(@"[WpSlam] createWithConfigYamlPath: a session is already active -- call -destroy first");
+        *_lastCreateDiagnostic = "session already active -- call destroy first";
         return NO;
     }
     std::string cfgPath = configYamlPath ? std::string(configYamlPath.UTF8String) : std::string();
     if (cfgPath.empty()) {
         NSLog(@"[WpSlam] createWithConfigYamlPath: configYamlPath is nil/empty");
+        *_lastCreateDiagnostic = "configYamlPath is nil/empty";
         return NO;
     }
 
@@ -216,15 +320,27 @@ void *g_activeToken = nullptr;
     // `created == 0` shape the rest of this function already handles, so no
     // downstream logic needs to change. Same fix applied to the JNI mirror
     // of this shim (rn's wpslam_jni.cpp) the same day.
+    diag << "attempt1(combined) device_config=" << describeConfigFile(cfgPath);
     int created = 0;
     try {
         created = XRSLAMCreate(cfgPath.c_str(), cfgPath.c_str(), "", "Waypoint SLAM Live", &configOut);
     } catch (const std::exception &e) {
         NSLog(@"[WpSlam] createWithConfigYamlPath: XRSLAMCreate [combined attempt] threw: %s", e.what());
+        diag << " threw(" << typeid(e).name() << "): " << e.what();
         created = 0;
     } catch (...) {
         NSLog(@"[WpSlam] createWithConfigYamlPath: XRSLAMCreate [combined attempt] threw a non-std exception");
+        diag << " threw non-std-exception";
         created = 0;
+    }
+    if (created) {
+        diag << " -> OK";
+    } else if (diag.str().find("threw") == std::string::npos) {
+        // XRSLAMCreate returned 0 WITHOUT throwing -- only possible today via
+        // CheckLicense (hardcoded to always succeed upstream, so this branch
+        // is not expected to fire in practice, but logged distinctly from a
+        // thrown exception in case that ever changes).
+        diag << " -> XRSLAMCreate returned 0 (no exception thrown)";
     }
     std::string generatedPath;
 
@@ -234,31 +350,42 @@ void *g_activeToken = nullptr;
 
         if (!siblingPath(cfgPath, generatedPath)) {
             NSLog(@"[WpSlam] createWithConfigYamlPath: cannot derive a sibling path (no '/') -- fallback skipped");
+            diag << " | attempt2 skipped: cannot derive sibling path from '" << cfgPath << "'";
         } else if (!writeFallbackSlamConfig(generatedPath)) {
             NSLog(@"[WpSlam] createWithConfigYamlPath: failed to write fallback slam_config to %s",
                   generatedPath.c_str());
+            diag << " | attempt2 skipped: failed to write fallback slam_config to " << generatedPath;
             generatedPath.clear();
         } else {
             configOut = nullptr;
+            diag << " | attempt2(fallback) slam_config=" << describeConfigFile(generatedPath)
+                 << " device_config=" << describeConfigFile(cfgPath);
             try {
                 created = XRSLAMCreate(generatedPath.c_str(), cfgPath.c_str(), "", "Waypoint SLAM Live", &configOut);
             } catch (const std::exception &e) {
                 NSLog(@"[WpSlam] createWithConfigYamlPath: XRSLAMCreate [fallback attempt] threw: %s", e.what());
+                diag << " threw(" << typeid(e).name() << "): " << e.what();
                 created = 0;
             } catch (...) {
                 NSLog(@"[WpSlam] createWithConfigYamlPath: XRSLAMCreate [fallback attempt] threw a non-std exception");
+                diag << " threw non-std-exception";
                 created = 0;
             }
             if (!created) {
                 NSLog(@"[WpSlam] createWithConfigYamlPath: XRSLAMCreate [fallback attempt] also failed");
                 std::remove(generatedPath.c_str());
                 generatedPath.clear();
+            } else {
+                diag << " -> OK";
             }
         }
     }
 
+    *_lastCreateDiagnostic = diag.str();
+
     if (!created) {
         NSLog(@"[WpSlam] createWithConfigYamlPath: both attempts failed");
+        NSLog(@"[WpSlam] createWithConfigYamlPath: diagnostic: %s", _lastCreateDiagnostic->c_str());
         return NO;
     }
 

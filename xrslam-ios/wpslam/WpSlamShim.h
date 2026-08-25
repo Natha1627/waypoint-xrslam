@@ -37,6 +37,15 @@ NS_ASSUME_NONNULL_BEGIN
 /// return only.
 - (BOOL)createWithConfigYamlPath:(NSString *)configYamlPath;
 
+/// 2026-08-26: diagnostic detail for the LAST -createWithConfigYamlPath: call
+/// (which attempt(s) ran, whether each config file existed/its size/its
+/// first bytes in hex, and the exact C++ exception type+message if either
+/// attempt threw) -- nil only if -createWithConfigYamlPath: has never been
+/// called. Exists so a caller can surface WHY creation failed through to a
+/// user-visible/Sentry-visible string instead of only NSLog, which is
+/// invisible on a TestFlight/production build with nobody attached in Xcode.
+- (nullable NSString *)lastCreateDiagnostic;
+
 /// No-op (logged) if this instance is not the active session. Safe to call
 /// more than once.
 - (void)destroy;
