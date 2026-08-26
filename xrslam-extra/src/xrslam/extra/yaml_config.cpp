@@ -1,8 +1,28 @@
+#include <fstream>
 #include <sstream>
 #include <xrslam/extra/yaml_config.h>
 #include <yaml-cpp/yaml.h>
 
 namespace xrslam::extra {
+
+// Amont compilait iOS avec `YAML::Load(arg)` (arg = CONTENU du yaml) et les
+// autres plateformes avec `YAML::LoadFile(arg)` (arg = CHEMIN), via un
+// `#if defined(XRSLAM_IOS)`. Ce macro est défini par `version.h` généré
+// (`#cmakedefine` + `if(IOS)` du CMakeLists racine), donc TOUT build iOS
+// prenait la branche « contenu » — alors que le shim Waypoint passe un chemin.
+// yaml-cpp parsait alors le chemin lui-même comme un document scalaire, et le
+// premier `device_config["cam0"]` levait `BadSubscript` (« operator[] call on a
+// scalar »). On accepte désormais les deux formes sur toutes les plateformes :
+// si la chaîne désigne un fichier lisible, c'est un chemin ; sinon, du contenu.
+static YAML::Node load_yaml_document(const std::string &path_or_content) {
+    std::ifstream file(path_or_content.c_str(), std::ios::binary);
+    if (file.good()) {
+        std::stringstream buffer;
+        buffer << file.rdbuf();
+        return YAML::Load(buffer.str());
+    }
+    return YAML::Load(path_or_content);
+}
 
 static YAML::Node find_node(const YAML::Node &root, const std::string &path,
                             bool mandatory = false) {
@@ -127,22 +147,14 @@ YamlConfig::YamlConfig(const std::string &slam_config_filename,
     YAML::Node slam_config;
     YAML::Node device_config;
     try {
-#if defined(XRSLAM_IOS)
-        slam_config = YAML::Load(slam_config_filename);
-#else
-        slam_config = YAML::LoadFile(slam_config_filename);
-#endif
+        slam_config = load_yaml_document(slam_config_filename);
     } catch (const YAML::ParserException &parse_error) {
         throw ParseException(parse_error.what());
     } catch (...) {
         throw LoadException(slam_config_filename);
     }
     try {
-#if defined(XRSLAM_IOS)
-        device_config = YAML::Load(device_config_filename);
-#else
-        device_config = YAML::LoadFile(device_config_filename);
-#endif
+        device_config = load_yaml_document(device_config_filename);
     } catch (const YAML::ParserException &parse_error) {
         throw ParseException(parse_error.what());
     } catch (...) {
