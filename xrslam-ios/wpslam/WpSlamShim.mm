@@ -469,7 +469,14 @@ void *g_activeToken = nullptr;
 
             if (state == XRSLAM_STATE_TRACKING_SUCCESS) {
                 XRSLAMPose pose;
-                XRSLAMGetResult(XRSLAM_RESULT_BODY_POSE, &pose);
+                // Every consumer of getPose: (world-space tie-point triangulation,
+                // AR projection and trajectory display) requires T_world_camera.
+                // BODY_POSE is the IMU/body pose and omits q_bc/p_bc; treating it
+                // as a camera pose makes the reprojection error rotate with the
+                // handset, so otherwise-static points appear to follow the view.
+                // Keep this aligned with Android's wpslam_jni.cpp and XRSLAM's
+                // own iOS visualizer, which both render CAMERA_POSE.
+                XRSLAMGetResult(XRSLAM_RESULT_CAMERA_POSE, &pose);
                 _pose[0] = pose.translation[0];
                 _pose[1] = pose.translation[1];
                 _pose[2] = pose.translation[2];
