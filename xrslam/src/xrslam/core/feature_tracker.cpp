@@ -295,6 +295,14 @@ void FeatureTracker::solve_pnp() {
             }
         }
     }
+
+    // The iOS fast path is supposed to visually correct the IMU-predicted
+    // pose before publishing it.  Upstream created the Ceres problem and all
+    // reprojection factors but destroyed it without solving, leaving iOS on
+    // the inertial prediction between sliding-window updates.  Android does
+    // not compile this XRSLAM_IOS branch, which is why the defect was
+    // platform-specific.  Actually execute the optimization.
+    solver->solve();
 }
 
 } // namespace xrslam

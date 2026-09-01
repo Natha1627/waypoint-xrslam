@@ -13,12 +13,27 @@ option(XRSLAM_ENABLE_DEBUG_INSPECTION "..." ON)
 option(XRSLAM_ENABLE_THREADING "..." OFF)
 option(XRSLAM_PC_HEADLESS_ONLY "..." OFF)
 option(XRSLAM_IOS "..." OFF)
+option(XRSLAM_IOS_SYNCHRONOUS_CORE
+       "Run the iOS feature tracker/frontend synchronously like the validated Android build"
+       ON)
 option(XRSLAM_TEST "..." OFF)
 option(XRSLAM_DEVICE_REPLAY "Waypoint: build xrslam_device_replay headless CLI (xrslam-device-replay/)" OFF)
 
 if(IOS)
   set(XRSLAM_IOS ON)
-  set(XRSLAM_ENABLE_THREADING ON)
+  # Waypoint production default: match the Android execution model.  The
+  # upstream iOS-only threaded path can publish an IMU prediction while its
+  # visual backend is still catching up; worse, its per-frame PnP fast path
+  # used to construct a Solver without ever calling solve().  Keeping the
+  # core synchronous makes XRSLAMPushSensorData/RunOneFrame causally complete
+  # before the wrapper publishes a pose, exactly like the Android build that
+  # has been validated on-device.  The old pipeline remains available for a
+  # deliberate benchmark with -DXRSLAM_IOS_SYNCHRONOUS_CORE=OFF.
+  if(XRSLAM_IOS_SYNCHRONOUS_CORE)
+    set(XRSLAM_ENABLE_THREADING OFF)
+  else()
+    set(XRSLAM_ENABLE_THREADING ON)
+  endif()
   #set(XRSLAM_ENABLE_DEBUG_INSPECTION OFF CACHE BOOL "..." FORCE)
 endif()
 
