@@ -12,6 +12,10 @@
 #include <xrslam/utility/unique_timer.h>
 namespace xrslam {
 
+// Minimum triangulated 2D-3D correspondences before the iOS fast-path PnP is
+// allowed to overwrite the inertial prediction (see solve_pnp()).
+static constexpr size_t MIN_PNP_CORRESPONDENCES = 12;
+
 FeatureTracker::FeatureTracker(XRSLAM::Detail *detail,
                                std::shared_ptr<Config> config)
     : detail(detail), config(config) {
@@ -92,7 +96,11 @@ void FeatureTracker::work(std::unique_lock<std::mutex> &l) {
             last_frame->track_keypoints(frame.get(), config.get());
             if (is_initialized) {
                 frame->preintegration.predict(last_frame, frame.get());
-#if defined(XRSLAM_IOS)
+// Waypoint 2026-09-09: this publication path is the iOS-ONLY estimator.  It
+// is now compiled only with -DXRSLAM_IOS_FAST_PNP=ON; the production iOS
+// build takes the #else branch, i.e. the exact code Android runs.  See the
+// XRSLAM_IOS_FAST_PNP option in the root CMakeLists.txt.
+#if defined(XRSLAM_IOS_FAST_PNP)
                 synchronized(keymap) {
                     attach_latest_frame(frame.get());
                     solve_pnp();
@@ -287,22 +295,44 @@ void FeatureTracker::solve_pnp() {
 
     solver->add_frame_states(latest_frame);
 
+    size_t correspondence_count = 0;
     for (size_t j = 0; j < latest_frame->keypoint_num(); ++j) {
         if (Track *track = latest_frame->get_track(j)) {
             if (track->all_tagged(TT_VALID, TT_TRIANGULATED)) {
                 solver->put_factor(Solver::create_reprojection_prior_factor(
                     latest_frame, track));
+                correspondence_count++;
             }
         }
     }
 
-    // The iOS fast path is supposed to visually correct the IMU-predicted
-    // pose before publishing it.  Upstream created the Ceres problem and all
-    // reprojection factors but destroyed it without solving, leaving iOS on
-    // the inertial prediction between sliding-window updates.  Android does
-    // not compile this XRSLAM_IOS branch, which is why the defect was
-    // platform-specific.  Actually execute the optimization.
-    solver->solve();
+    // A 6-DoF pose optimised from reprojection priors ALONE (no IMU factor, no
+    // pose prior) is only observable with enough well-spread correspondences.
+    // Upstream ran no check at all: on a low-texture or motion-blurred frame
+    // the problem is under-determined and Ceres is free to move the published
+    // pose arbitrarily far, which is exactly the "cloud follows the camera"
+    // signature reported on device.  Keep the inertial prediction instead --
+    // it is bounded and physically consistent.
+    if (correspondence_count < MIN_PNP_CORRESPONDENCES) {
+        return;
+    }
+
+    // ceres::Solver::Options::update_state_every_iteration is true for this
+    // problem, so a diverged or aborted solve leaves the frame's pose ALREADY
+    // mutated in place.  Snapshot it and roll back unless Ceres reports the
+    // solution usable -- upstream discarded that return value entirely.
+    const PoseState pose_before = latest_frame->pose;
+    const MotionState motion_before = latest_frame->motion;
+    if (!solver->solve()) {
+        latest_frame->pose = pose_before;
+        latest_frame->motion = motion_before;
+        return;
+    }
+    if (!latest_frame->pose.p.allFinite() ||
+        !latest_frame->pose.q.coeffs().allFinite()) {
+        latest_frame->pose = pose_before;
+        latest_frame->motion = motion_before;
+    }
 }
 
 } // namespace xrslam

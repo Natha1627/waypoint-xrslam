@@ -16,6 +16,7 @@
 #cmakedefine XRSLAM_ENABLE_THREADING
 #cmakedefine XRSLAM_PC_HEADLESS_ONLY
 #cmakedefine XRSLAM_IOS
+#cmakedefine XRSLAM_IOS_FAST_PNP
 #cmakedefine XRSLAM_TEST
 // clang-format on
 

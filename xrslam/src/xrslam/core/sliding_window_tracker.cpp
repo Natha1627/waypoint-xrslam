@@ -206,7 +206,7 @@ bool SlidingWindowTracker::manage_keyframe() {
     bool is_keyframe = mapped_landmark_count <
                        config->sliding_window_force_keyframe_landmarks();
 
-#if defined(XRSLAM_IOS)
+#if defined(XRSLAM_IOS_FAST_PNP)
     is_keyframe = is_keyframe || !newframe_j->tag(FT_NO_TRANSLATION);
 #endif
 
