@@ -108,7 +108,9 @@ typedef enum XRSLAMResultType {
     XRSLAM_RESULT_DEBUG_LOGS,    /*!< debug logs. */
     XRSLAM_RESULT_VERSION,       /*!< version. */
     XRSLAM_RESULT_UNKNOWN,
-    XRSLAM_INFO_INTRINSICS
+    XRSLAM_INFO_INTRINSICS,
+    XRSLAM_RESULT_QUALIFIED_LANDMARKS /*!< landmarks with stable identity and
+                                          triangulation quality. */
 } XRSLAMResultType;
 
 /**
@@ -152,6 +154,33 @@ typedef struct XRSLAMLandmarks {
     XRSLAMLandmark *landmarks;
     int num_landmarks;
 } XRSLAMLandmarks;
+
+/**
+ * Waypoint quality-preserving landmark contract. The legacy XYZ result is
+ * intentionally retained for compatibility and reproducible A/B comparisons.
+ */
+typedef struct XRSLAMQualifiedLandmark {
+    uint64_t track_id;
+    double x, y, z;
+    double inverse_depth;
+    double triangulation_angle_rad;
+    double mean_reprojection_error_px;
+    double max_reprojection_error_px;
+    double observation_u_px;
+    double observation_v_px;
+    double first_observation_timestamp;
+    double last_observation_timestamp;
+    int observation_count;
+    int life;
+    int valid;
+    int triangulated;
+    int outlier;
+    int static_track;
+} XRSLAMQualifiedLandmark;
+typedef struct XRSLAMQualifiedLandmarks {
+    XRSLAMQualifiedLandmark *landmarks;
+    int num_landmarks;
+} XRSLAMQualifiedLandmarks;
 
 /**
  * @brief  2d corner in image coordinate.
@@ -223,6 +252,13 @@ void XRSLAMSetViewer(void *viewer);
  * @param[out] result_data result data.
  */
 void XRSLAMGetResult(XRSLAMResultType result_type, void *result_data);
+
+/**
+ * Direct Waypoint extension for quality-preserving landmarks. Kept explicit
+ * instead of relying only on enum dispatch so mixed consumers cannot silently
+ * disagree on an extended XRSLAMResultType ABI.
+ */
+void XRSLAMGetQualifiedLandmarks(XRSLAMQualifiedLandmarks *landmarks);
 
 /**
  * @brief destroy SLAM system

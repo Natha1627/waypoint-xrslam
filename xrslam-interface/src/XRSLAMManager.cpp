@@ -1,5 +1,7 @@
 #include "XRSLAMManager.h"
 
+#include <cmath>
+
 #define XRSLAM_VERSION "0.1.0"
 
 namespace xrslam {
@@ -201,15 +203,80 @@ void XRSLAMManager::GetResultState(XRSLAMState *state) const {
     }
 }
 void XRSLAMManager::GetResultLandmarks(XRSLAMLandmarks *landmarks) const {
-    inspect_debug(sliding_window_landmarks, swlandmarks) {
-        auto pts = std::any_cast<std::vector<xrslam::Landmark>>(swlandmarks);
-        landmarks->num_landmarks = pts.size();
-        landmarks->landmarks = new XRSLAMLandmark[pts.size()];
-        for (int i = 0; i < pts.size(); i++) {
-            xrslam::vector<3> cur_p = pts[i].p;
-            landmarks->landmarks[i].x = cur_p(0);
-            landmarks->landmarks[i].y = cur_p(1);
-            landmarks->landmarks[i].z = cur_p(2);
+    landmarks->landmarks = nullptr;
+    landmarks->num_landmarks = 0;
+    // Public runtime result: release builds must be able to read the map.
+    inspect(sliding_window_landmarks, swlandmarks) {
+        const auto *pts =
+            std::any_cast<std::vector<xrslam::Landmark>>(&swlandmarks);
+        if (pts == nullptr) {
+            return;
+        }
+        // Keep the legacy XYZ API safe for older consumers (loop closure in
+        // particular): the internal publisher intentionally contains every
+        // active track so the qualified API can expose its full diagnostics,
+        // including provisional and rejected tracks. The legacy API has no
+        // flags, therefore publishing those rows would turn invalid/infinite
+        // positions into apparently valid geometry.
+        size_t eligible_count = 0;
+        for (const auto &point : *pts) {
+            eligible_count += point.valid && point.triangulated &&
+                              point.static_track && !point.outlier &&
+                              std::isfinite(point.p.x()) &&
+                              std::isfinite(point.p.y()) &&
+                              std::isfinite(point.p.z());
+        }
+        landmarks->num_landmarks = static_cast<int>(eligible_count);
+        landmarks->landmarks = new XRSLAMLandmark[eligible_count];
+        size_t dst_index = 0;
+        for (const auto &point : *pts) {
+            if (!point.valid || !point.triangulated || !point.static_track ||
+                point.outlier || !std::isfinite(point.p.x()) ||
+                !std::isfinite(point.p.y()) || !std::isfinite(point.p.z())) {
+                continue;
+            }
+            landmarks->landmarks[dst_index].x = point.p.x();
+            landmarks->landmarks[dst_index].y = point.p.y();
+            landmarks->landmarks[dst_index].z = point.p.z();
+            ++dst_index;
+        }
+    }
+}
+
+void XRSLAMManager::GetResultQualifiedLandmarks(
+    XRSLAMQualifiedLandmarks *landmarks) const {
+    landmarks->landmarks = nullptr;
+    landmarks->num_landmarks = 0;
+    // Public runtime result: release builds must be able to read the map.
+    inspect(sliding_window_landmarks, swlandmarks) {
+        const auto *pts =
+            std::any_cast<std::vector<xrslam::Landmark>>(&swlandmarks);
+        if (pts == nullptr) {
+            return;
+        }
+        landmarks->num_landmarks = static_cast<int>(pts->size());
+        landmarks->landmarks = new XRSLAMQualifiedLandmark[pts->size()];
+        for (size_t i = 0; i < pts->size(); ++i) {
+            const xrslam::Landmark &src = (*pts)[i];
+            XRSLAMQualifiedLandmark &dst = landmarks->landmarks[i];
+            dst.track_id = src.track_id;
+            dst.x = src.p.x();
+            dst.y = src.p.y();
+            dst.z = src.p.z();
+            dst.inverse_depth = src.inverse_depth;
+            dst.triangulation_angle_rad = src.triangulation_angle_rad;
+            dst.mean_reprojection_error_px = src.mean_reprojection_error_px;
+            dst.max_reprojection_error_px = src.max_reprojection_error_px;
+            dst.observation_u_px = src.last_observation_px.x();
+            dst.observation_v_px = src.last_observation_px.y();
+            dst.first_observation_timestamp = src.first_observation_timestamp;
+            dst.last_observation_timestamp = src.last_observation_timestamp;
+            dst.observation_count = static_cast<int>(src.observation_count);
+            dst.life = static_cast<int>(src.life);
+            dst.valid = src.valid ? 1 : 0;
+            dst.triangulated = src.triangulated ? 1 : 0;
+            dst.outlier = src.outlier ? 1 : 0;
+            dst.static_track = src.static_track ? 1 : 0;
         }
     }
 }
