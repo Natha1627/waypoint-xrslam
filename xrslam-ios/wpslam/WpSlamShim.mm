@@ -82,6 +82,7 @@
 
 #include "XRSLAM.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <deque>
 #include <exception>
@@ -580,6 +581,74 @@ void *g_activeToken = nullptr;
             out[k * 3 + 1] = p.y;
             out[k * 3 + 2] = p.z;
         }
+    }
+
+    return (NSInteger)outN;
+}
+
+// Mirrors wpslam_jni.cpp's nativeGetQualifiedLandmarksPacked: same source
+// (XRSLAMGetQualifiedLandmarks), same uniform decimation preserving oldest
+// index -> newest across the full track set (identical formula to
+// -getTrajectory:maxPoints: above), same "return everything, let the caller
+// gate" contract -- no valid/outlier filtering here, that is
+// SlamQualifiedLandmarksIOS.passesGate's job on the Swift side, matching
+// Android's SlamQualifiedLandmarks.passesGate.
+- (NSInteger)getQualifiedLandmarks:(WpSlamQualifiedLandmark *)out maxPoints:(NSInteger)maxPoints {
+    if (![self isActive] || out == nullptr || maxPoints <= 0) {
+        return 0;
+    }
+
+    XRSLAMQualifiedLandmarks landmarks{};
+    try {
+        XRSLAMGetQualifiedLandmarks(&landmarks);
+    } catch (const std::exception &e) {
+        NSLog(@"[WpSlam] getQualifiedLandmarks: XRSLAMGetQualifiedLandmarks threw: %s", e.what());
+        return 0;
+    } catch (...) {
+        NSLog(@"[WpSlam] getQualifiedLandmarks: XRSLAMGetQualifiedLandmarks threw a non-std exception");
+        return 0;
+    }
+
+    // Same ownership contract as XRSLAMGetResultLandmarks/GetResultLandmarks: caller (this method)
+    // owns the heap array XRSLAMGetQualifiedLandmarks allocated and must free it before returning,
+    // on every path including the early-outs below (mirrors wpslam_jni.cpp's QualifiedLandmarksOwner
+    // RAII guard).
+    struct QualifiedLandmarksOwner {
+        XRSLAMQualifiedLandmark *ptr;
+        ~QualifiedLandmarksOwner() { delete[] ptr; }
+    } owner{landmarks.landmarks};
+
+    if (landmarks.num_landmarks <= 0 || landmarks.landmarks == nullptr) {
+        return 0;
+    }
+
+    const size_t n = static_cast<size_t>(landmarks.num_landmarks);
+    const size_t outN = std::min(n, static_cast<size_t>(maxPoints));
+
+    for (size_t k = 0; k < outN; k++) {
+        const size_t index = (outN == n || outN == 1)
+            ? k
+            : static_cast<size_t>((double)k * (double)(n - 1) / (double)(outN - 1) + 0.5);
+        const XRSLAMQualifiedLandmark &point = landmarks.landmarks[std::min(index, n - 1)];
+        WpSlamQualifiedLandmark &dst = out[k];
+        dst.trackId = (int64_t)point.track_id;
+        dst.x = point.x;
+        dst.y = point.y;
+        dst.z = point.z;
+        dst.inverseDepth = point.inverse_depth;
+        dst.triangulationAngleRad = point.triangulation_angle_rad;
+        dst.meanReprojectionErrorPx = point.mean_reprojection_error_px;
+        dst.maxReprojectionErrorPx = point.max_reprojection_error_px;
+        dst.observationUPx = point.observation_u_px;
+        dst.observationVPx = point.observation_v_px;
+        dst.firstObservationTimestamp = point.first_observation_timestamp;
+        dst.lastObservationTimestamp = point.last_observation_timestamp;
+        dst.observationCount = (int32_t)point.observation_count;
+        dst.life = (int32_t)point.life;
+        dst.valid = point.valid ? YES : NO;
+        dst.triangulated = point.triangulated ? YES : NO;
+        dst.outlier = point.outlier ? YES : NO;
+        dst.staticTrack = point.static_track ? YES : NO;
     }
 
     return (NSInteger)outN;

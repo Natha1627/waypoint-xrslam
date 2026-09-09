@@ -24,6 +24,33 @@ typedef NS_ENUM(NSInteger, WpSlamTrackingState) {
   WpSlamTrackingStateTrackingFail = 2,
 };
 
+/// Method-for-method mirror of the JNI shim's packed qualified-landmark ABI
+/// (rn/native/slam/jni/wpslam_jni.cpp's nativeGetQualifiedLandmarksPacked,
+/// itself XRSLAMQualifiedLandmark field-for-field) -- same source
+/// (XRSLAMGetQualifiedLandmarks), same fields, same flag bits, just native
+/// types instead of a bit-packed jlong array (Swift/ObjC has no JNI-array
+/// type restriction to work around). `outlier`/`valid`/`triangulated`/
+/// `staticTrack` match the JNI packing's flags bit0/bit2/bit1/bit3
+/// respectively (see wpslam_jni.cpp's own header comment on that function).
+typedef struct {
+  int64_t trackId;
+  double x, y, z;
+  double inverseDepth;
+  double triangulationAngleRad;
+  double meanReprojectionErrorPx;
+  double maxReprojectionErrorPx;
+  double observationUPx;
+  double observationVPx;
+  double firstObservationTimestamp;
+  double lastObservationTimestamp;
+  int32_t observationCount;
+  int32_t life;
+  BOOL valid;
+  BOOL triangulated;
+  BOOL outlier;
+  BOOL staticTrack;
+} WpSlamQualifiedLandmark;
+
 NS_ASSUME_NONNULL_BEGIN
 
 @interface WpSlamEngine : NSObject
@@ -72,6 +99,17 @@ NS_ASSUME_NONNULL_BEGIN
 /// JNI shim's nativeGetTrajectory), and returns the number of POINTS written
 /// (0...maxPoints -- `out`'s consumed length is 3x the return value).
 - (NSInteger)getTrajectory:(float *)out maxPoints:(NSInteger)maxPoints;
+
+/// Fills `out` (caller-allocated, capacity `maxPoints` WpSlamQualifiedLandmark
+/// structs) with up to `maxPoints` landmarks -- ALL active tracks, not
+/// pre-filtered to valid/non-outlier ones, same as the JNI shim's packed API
+/// (the caller applies its own geometry gate, e.g. Android's
+/// SlamQualifiedLandmarks.passesGate). Same uniform-decimation-preserving-
+/// track-identity selection as -getTrajectory:maxPoints: when the engine has
+/// more than `maxPoints` tracks. Returns the number of structs written
+/// (0...maxPoints); 0 if this instance is not the active session or the
+/// engine has no tracks yet.
+- (NSInteger)getQualifiedLandmarks:(WpSlamQualifiedLandmark *)out maxPoints:(NSInteger)maxPoints;
 
 @end
 
