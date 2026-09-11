@@ -45,6 +45,12 @@ const Config *XRSLAM::Detail::configurations() const { return config.get(); }
 
 Pose XRSLAM::Detail::track_gyroscope(const double &t, const double &x,
                                      const double &y, const double &z) {
+    ingest_gyroscope(t, x, y, z);
+    return predict_pose(t);
+}
+
+void XRSLAM::Detail::ingest_gyroscope(const double &t, const double &x,
+                                     const double &y, const double &z) {
     if (accelerometers.size() > 0) {
         if (t < accelerometers.front().t) {
             gyroscopes.clear();
@@ -66,10 +72,15 @@ Pose XRSLAM::Detail::track_gyroscope(const double &t, const double &x,
         }
     }
     gyroscopes.emplace_back(GyroscopeData{t, {x, y, z}});
-    return predict_pose(t);
 }
 
 Pose XRSLAM::Detail::track_accelerometer(const double &t, const double &x,
+                                         const double &y, const double &z) {
+    ingest_accelerometer(t, x, y, z);
+    return predict_pose(t);
+}
+
+void XRSLAM::Detail::ingest_accelerometer(const double &t, const double &x,
                                          const double &y, const double &z) {
     if (gyroscopes.size() > 0 && t >= gyroscopes.front().t) {
         if (t > gyroscopes.back().t) {
@@ -97,7 +108,6 @@ Pose XRSLAM::Detail::track_accelerometer(const double &t, const double &x,
             track_imu({t, w, {x, y, z}});
         }
     }
-    return predict_pose(t);
 }
 
 Pose XRSLAM::Detail::track_camera(std::shared_ptr<Image> image) {

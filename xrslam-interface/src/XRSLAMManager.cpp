@@ -138,12 +138,12 @@ void XRSLAMManager::PushImage(XRSLAMImage *image) {
 }
 
 void XRSLAMManager::PushAcceleration(XRSLAMAcceleration *acc) {
-    detail_->track_accelerometer(acc->timestamp, acc->data[0], acc->data[1],
+    detail_->ingest_accelerometer(acc->timestamp, acc->data[0], acc->data[1],
                                  acc->data[2]);
 }
 
 void XRSLAMManager::PushGyroscope(XRSLAMGyroscope *gyro) {
-    detail_->track_gyroscope(gyro->timestamp, gyro->data[0], gyro->data[1],
+    detail_->ingest_gyroscope(gyro->timestamp, gyro->data[0], gyro->data[1],
                              gyro->data[2]);
 }
 

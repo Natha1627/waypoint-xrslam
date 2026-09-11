@@ -34,6 +34,10 @@ struct XRSLAM::Detail {
                          const double &z);
     Pose track_accelerometer(const double &t, const double &x, const double &y,
                              const double &z);
+    // C sensor-push API discards a predicted pose. Ingest without replaying the
+    // entire prediction history on every sensor sample, especially during camera gaps.
+    void ingest_gyroscope(const double &t, const double &x, const double &y, const double &z);
+    void ingest_accelerometer(const double &t, const double &x, const double &y, const double &z);
     Pose track_camera(std::shared_ptr<Image> image);
 
     std::tuple<double, Pose> get_latest_state() const;
